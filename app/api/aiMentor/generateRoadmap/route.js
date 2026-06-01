@@ -1,8 +1,5 @@
-// app/api/generateRoadmap/route.js
+// app/api/aiMentor/generateRoadmap/route.js
 import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Sleep function for retry logic
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -11,33 +8,52 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 2000, 4000];
 
-async function callGeminiWithRetry(prompt, retryCount = 0) {
+async function callGroqWithRetry(prompt, retryCount = 0) {
   try {
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-flash",
-      generationConfig: {
-        maxOutputTokens: 3000,
-        temperature: 0.7,
-      },
-    });
-
     console.log(`🔹 Roadmap generation attempt ${retryCount + 1}`);
     
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const aiResponse = response.text();
-    
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY.trim()}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error?.message || `Groq API returned status ${response.status}`;
+      
+      // Retry on transient status codes like 429 (rate limit) or 503 (service unavailable)
+      if ((response.status === 429 || response.status === 503) && retryCount < MAX_RETRIES - 1) {
+        const delay = RETRY_DELAYS[retryCount];
+        console.log(`⏳ Groq transient error ${response.status}. Waiting ${delay}ms before retry...`);
+        await sleep(delay);
+        return callGroqWithRetry(prompt, retryCount + 1);
+      }
+      
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
     console.log(`✅ Roadmap generation successful on attempt ${retryCount + 1}`);
-    return aiResponse;
+    return data.choices[0].message.content;
     
   } catch (error) {
     console.log(`❌ Roadmap generation attempt ${retryCount + 1} failed:`, error.message);
     
-    if (error.status === 503 && retryCount < MAX_RETRIES - 1) {
+    if (retryCount < MAX_RETRIES - 1) {
       const delay = RETRY_DELAYS[retryCount];
       console.log(`⏳ Waiting ${delay}ms before retry...`);
       await sleep(delay);
-      return callGeminiWithRetry(prompt, retryCount + 1);
+      return callGroqWithRetry(prompt, retryCount + 1);
     }
     
     throw error;
@@ -98,9 +114,9 @@ function generateFallbackRoadmap(domain, mindsetType) {
         }
       ]
     }
-  }
+  };
 
-  return fallbackRoadmaps[domain] || fallbackRoadmaps.engineering
+  return fallbackRoadmaps[domain] || fallbackRoadmaps.engineering;
 }
 
 export async function POST(request) {
@@ -118,8 +134,8 @@ export async function POST(request) {
     }
 
     // Check if API key is configured
-    if (!process.env.GEMINI_API_KEY) {
-      console.log('❌ Gemini API key not configured, using fallback roadmap');
+    if (!process.env.GROQ_API_KEY) {
+      console.log('❌ Groq API key not configured, using fallback roadmap');
       const fallbackRoadmap = generateFallbackRoadmap(domain, mindsetType);
       return NextResponse.json({
         success: true,
@@ -171,8 +187,8 @@ Return a valid JSON structure with this exact format:
 
 Generate a comprehensive, personalized roadmap now:`;
 
-      // Call Gemini API
-      const aiResponse = await callGeminiWithRetry(enhancedPrompt);
+      // Call Groq API
+      const aiResponse = await callGroqWithRetry(enhancedPrompt);
       
       // Try to parse the AI response as JSON
       let roadmapData;
@@ -214,12 +230,12 @@ Generate a comprehensive, personalized roadmap now:`;
       return NextResponse.json({
         success: true,
         roadmap: roadmapData,
-        source: 'gemini'
+        source: 'groq'
       });
 
-    } catch (geminiError) {
-      console.log('❌ Gemini roadmap generation failed, using intelligent fallback');
-      console.error('Gemini error:', geminiError.message);
+    } catch (groqError) {
+      console.log('❌ Groq roadmap generation failed, using intelligent fallback');
+      console.error('Groq error:', groqError.message);
       
       const fallbackRoadmap = generateFallbackRoadmap(domain, mindsetType);
       return NextResponse.json({

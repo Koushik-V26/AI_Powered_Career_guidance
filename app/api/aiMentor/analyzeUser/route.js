@@ -1,8 +1,5 @@
-// app/api/analyzeUser/route.js
+// app/api/aiMentor/analyzeUser/route.js
 import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Sleep function for retry logic
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -11,33 +8,52 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 2000, 4000];
 
-async function callGeminiWithRetry(prompt, retryCount = 0) {
+async function callGroqWithRetry(prompt, retryCount = 0) {
   try {
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-flash",
-      generationConfig: {
-        maxOutputTokens: 2000,
-        temperature: 0.7,
-      },
-    });
-
     console.log(`🔹 Analysis attempt ${retryCount + 1}`);
     
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const aiResponse = response.text();
-    
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY.trim()}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error?.message || `Groq API returned status ${response.status}`;
+      
+      // Retry on transient status codes like 429 (rate limit) or 503 (service unavailable)
+      if ((response.status === 429 || response.status === 503) && retryCount < MAX_RETRIES - 1) {
+        const delay = RETRY_DELAYS[retryCount];
+        console.log(`⏳ Groq transient error ${response.status}. Waiting ${delay}ms before retry...`);
+        await sleep(delay);
+        return callGroqWithRetry(prompt, retryCount + 1);
+      }
+      
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
     console.log(`✅ Analysis successful on attempt ${retryCount + 1}`);
-    return aiResponse;
+    return data.choices[0].message.content;
     
   } catch (error) {
     console.log(`❌ Analysis attempt ${retryCount + 1} failed:`, error.message);
     
-    if (error.status === 503 && retryCount < MAX_RETRIES - 1) {
+    if (retryCount < MAX_RETRIES - 1) {
       const delay = RETRY_DELAYS[retryCount];
       console.log(`⏳ Waiting ${delay}ms before retry...`);
       await sleep(delay);
-      return callGeminiWithRetry(prompt, retryCount + 1);
+      return callGroqWithRetry(prompt, retryCount + 1);
     }
     
     throw error;
@@ -137,8 +153,8 @@ export async function POST(request) {
     }
 
     // Check if API key is configured
-    if (!process.env.GEMINI_API_KEY) {
-      console.log('❌ Gemini API key not configured, using fallback');
+    if (!process.env.GROQ_API_KEY) {
+      console.log('❌ Groq API key not configured, using fallback');
       const fallbackAnalysis = generateFallbackAnalysis(userData);
       return NextResponse.json({
         success: true,
@@ -197,7 +213,7 @@ PROVIDE MINDSET AND LEARNING ANALYSIS:
 
 Focus on creating a goal-oriented, structured approach since they know what they want but need guidance on execution.
 
-Return structured analysis with mindsetType, learningStyle, careerMatch, roadmapType, keyStrengths, suggestedSkills, and detailed roadmapPrompt.`;
+Return structured analysis with mindsetType, learningStyle, careerMatch, roadmapType, keyStrengths, suggestedSkills, and detailed roadmapPrompt. Use the exact JSON format as exploration.`;
 
       } else if (userData.subCategory === 'intermediate') {
         analysisPrompt = `Analyze this intermediate user profile in ${userData.domain}:
@@ -217,7 +233,7 @@ ANALYZE FOR SKILL ADVANCEMENT:
 
 Since they have experience, focus on skill enhancement, specialization, and career progression strategies.
 
-Return analysis focusing on advancement opportunities and skill enhancement.`;
+Return analysis focusing on advancement opportunities and skill enhancement using the same JSON keys.`;
 
       } else if (userData.subCategory === 'skill-gap') {
         analysisPrompt = `Analyze this skill-gap user profile in ${userData.domain}:
@@ -238,11 +254,11 @@ SKILL GAP ANALYSIS:
 
 Focus on updating outdated skills and bringing them current with industry standards.
 
-Return analysis emphasizing skill updates and modern practices.`;
+Return analysis emphasizing skill updates and modern practices using the same JSON keys.`;
       }
 
-      // Call Gemini API
-      const aiAnalysis = await callGeminiWithRetry(analysisPrompt);
+      // Call Groq API
+      const aiAnalysis = await callGroqWithRetry(analysisPrompt);
       
       // Try to parse the AI response as JSON, fallback if needed
       let parsedAnalysis;
@@ -268,12 +284,12 @@ Return analysis emphasizing skill updates and modern practices.`;
       return NextResponse.json({
         success: true,
         analysis: parsedAnalysis,
-        source: 'gemini'
+        source: 'groq'
       });
 
-    } catch (geminiError) {
-      console.log('❌ Gemini analysis failed, using intelligent fallback');
-      console.error('Gemini error:', geminiError.message);
+    } catch (groqError) {
+      console.log('❌ Groq analysis failed, using intelligent fallback');
+      console.error('Groq error:', groqError.message);
       
       const fallbackAnalysis = generateFallbackAnalysis(userData);
       return NextResponse.json({

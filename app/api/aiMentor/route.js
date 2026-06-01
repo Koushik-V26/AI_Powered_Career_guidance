@@ -1,33 +1,16 @@
 // app/api/aiMentor/route.js
 import { NextResponse } from 'next/server'
-import { GoogleGenerativeAI } from '@google/generative-ai'
 
 export async function POST(request) {
   try {
-    // Debug: Log environment variable info (commented out for hardcoded testing)
-    // console.log('=== DEBUG INFO ===')
-    // console.log('API Key exists:', !!process.env.GEMINI_API_KEY)
-    // console.log('API Key starts with AIza:', process.env.GEMINI_API_KEY?.startsWith('AIza'))
-    // console.log('API Key length:', process.env.GEMINI_API_KEY?.length)
-    // console.log('First 10 chars:', process.env.GEMINI_API_KEY?.substring(0, 10))
-    // console.log('==================')
-
     // Check if API key exists
-    if (!process.env.GEMINI_API_KEY) {
-      console.error('GEMINI_API_KEY environment variable is not set')
+    if (!process.env.GROQ_API_KEY) {
+      console.error('GROQ_API_KEY environment variable is not set')
       return NextResponse.json(
         { error: 'AI service configuration error. Please check environment variables.' },
         { status: 500 }
       )
     }
-
-    // Debug: Check the API key format
-    console.log('API Key starts with AIza:', process.env.GEMINI_API_KEY?.startsWith('AIza'))
-    console.log('API Key length:', process.env.GEMINI_API_KEY?.length)
-    console.log('First 10 chars:', process.env.GEMINI_API_KEY?.substring(0, 10))
-
-    // Initialize GenAI with environment variable
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY.trim())
 
     const { userInput, currentProgress } = await request.json()
 
@@ -38,31 +21,7 @@ export async function POST(request) {
       )
     }
 
-    // Try different model names in order of preference
-    const modelNames = [
-      'gemini-2.5-flash',  // Try the newer model first
-      'gemini-1.5-flash',  // Fallback to older stable model
-      'gemini-pro'         // Last resort
-    ]
-
-    let model = null
-    let modelUsed = null
-
-    for (const modelName of modelNames) {
-      try {
-        model = genAI.getGenerativeModel({ model: modelName })
-        modelUsed = modelName
-        console.log(`Using model: ${modelName}`)
-        break
-      } catch (modelError) {
-        console.log(`Model ${modelName} failed, trying next...`)
-        continue
-      }
-    }
-
-    if (!model) {
-      throw new Error('No available models found')
-    }
+    const modelName = 'llama-3.3-70b-versatile'
 
     // Create context-aware prompt
     const systemPrompt = `You are an AI Career Mentor with expertise in professional development, career transitions, and skill building. 
@@ -86,33 +45,45 @@ GUIDELINES:
 3. Be encouraging but realistic
 4. Suggest specific next steps when appropriate
 5. Ask follow-up questions to better understand their needs
-6. Keep responses conversational and not too long (2-3 paragraphs max)
+6. Keep responses conversational and not too long (2-3 paragraphs max)`
 
-USER QUESTION: ${userInput}
+    console.log('Attempting to generate Groq content...')
+    
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY.trim()}`
+      },
+      body: JSON.stringify({
+        model: modelName,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userInput }
+        ],
+        temperature: 0.7
+      })
+    })
 
-Provide a helpful, personalized response as their AI career mentor:`
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || `Groq API returned status ${response.status}`);
+    }
 
-    console.log('Attempting to generate content...')
-    const result = await model.generateContent(systemPrompt)
-    const response = await result.response
-    const aiMessage = response.text()
+    const data = await response.json()
+    const aiMessage = data.choices[0].message.content
 
-    console.log('Successfully generated response')
+    console.log('Successfully generated Groq response')
     
     return NextResponse.json({
       aiMessage,
-      source: 'gemini',
-      modelUsed,
+      source: 'groq',
+      modelUsed: modelName,
       timestamp: new Date().toISOString()
     })
 
   } catch (error) {
-    console.error('Gemini API Error Details:', {
-      message: error.message,
-      status: error.status,
-      statusText: error.statusText,
-      errorDetails: error.errorDetails
-    })
+    console.error('Groq API Error Details:', error.message)
 
     // Get userInput from the caught error context
     const body = await request.json().catch(() => ({ userInput: '', currentProgress: {} }))
