@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+</head>
+<body>
+
+    <h2>Pending Users</h2>
+    <ul id="pending-users-list"></ul>
+
+    <script>
+        async function fetchPendingUsers() {
+            const list = document.getElementById('pending-users-list');
+            list.innerHTML = ''; 
+            const response = await fetch('http://localhost:3000/admin/pending-users');
+            const data = await response.json();
+
+            data.pendingUsers.forEach(username => {
+                const li = document.createElement('li');
+                li.innerHTML = `
+                    <span>${username}</span>
+                    <button onclick="approveUser('${username}')">Approve</button>
+                `;
+                list.appendChild(li);
+            });
+        }
+
+        async function approveUser(username) {
+            const response = await fetch('http://localhost:3000/admin/approve', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ username }),
+            });
+
+            const result = await response.json();
+            alert(result.message);
+            fetchPendingUsers(); 
+        }
+
+        fetchPendingUsers();
+    </script>
+
+</body>
+</html>
